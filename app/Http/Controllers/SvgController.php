@@ -3,77 +3,118 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Response;
 
 class SvgController extends Controller
 {
     public function upload(Request $request)
     {
         $request->validate([
-            'svg_file' => 'required|file|mimes:svg',
+            'svg_files.*' => 'required|file|mimes:svg',
         ]);
-    
-        $file = $request->file('svg_file');
-        $svgContent = file_get_contents($file->getPathname());
-    
-        if (empty($svgContent)) {
-            return response()->json(['error' => 'SVG file is empty or invalid'], 400);
+
+        $files = $request->file('svg_files');
+        $results = [];
+        $outputDir = storage_path('app/svg_output'); 
+        if (!File::exists($outputDir)) {
+            File::makeDirectory($outputDir, 0755, true);
         }
-    
-        $xml = simplexml_load_string($svgContent);
-        $namespaces = $xml->getNamespaces(true);
-        $xml->registerXPathNamespace('svg', $namespaces['']);
-    
-        $paths = $xml->xpath('//svg:path');
-        if (empty($paths)) {
-            return response()->json(['error' => 'No <path> elements found in the SVG'], 400);
+
+        foreach ($files as $file) {
+            $svgContent = file_get_contents($file->getPathname());
+
+            if (empty($svgContent)) {
+                $results[] = ['error' => 'SVG file is empty or invalid'];
+                continue;
+            }
+            $svgContent = $this->removeDefs($svgContent);
+            $svgContent = $this->updateTransform($svgContent);
+
+            $boundingBox = $this->calculateBoundingBox($svgContent);
+            if (!$boundingBox) {
+                $results[] = ['error' => 'Unable to calculate bounding box'];
+                continue;
+            }
+            $updatedSvgContent = $this->updateSvg($svgContent, $boundingBox);
+
+            $newFileName = $file->getClientOriginalName();
+            $newFilePath = $outputDir . '/' . $newFileName;
+            File::put($newFilePath, $updatedSvgContent);
+
+            $results[] = [
+                'original' => $file->getClientOriginalName(),
+                'new_file' => $newFileName,
+                'viewBox' => "{$boundingBox['minX']} {$boundingBox['minY']} {$boundingBox['width']} {$boundingBox['height']}",
+                'width' => $boundingBox['width'],
+                'height' => $boundingBox['height'],
+            ];
         }
-    
-        $boundingBox = $this->calculateBoundingBox($svgContent);
-        if (!$boundingBox) {
-            return response()->json(['error' => 'Unable to calculate bounding box'], 400);
-        }
-    
+
         return response()->json([
-            'viewBox' => "{$boundingBox['minX']} {$boundingBox['minY']} {$boundingBox['width']} {$boundingBox['height']}",
-            'width' => $boundingBox['width'],
-            'height' => $boundingBox['height'],
+            'message' => 'SVG files have been processed and saved.',
+            'results' => $results,
         ]);
     }
-    
+    private function removeDefs($svgContent)
+    {
+        $pattern = '/<defs>.*?<\/defs>/is';
+        return preg_replace($pattern, '', $svgContent);
+    }
+
+    private function updateTransform($svgContent)
+    {
+        $pattern = '/transform="translate\([^\)]+\)"/';
+        return preg_replace($pattern, 'transform="translate(0 0)"', $svgContent);
+    }
     private function calculateBoundingBox($svgContent)
     {
         $xml = simplexml_load_string($svgContent);
         $namespaces = $xml->getNamespaces(true);
         $xml->registerXPathNamespace('svg', $namespaces['']);
-
+    
         $minX = PHP_FLOAT_MAX;
         $minY = PHP_FLOAT_MAX;
         $maxX = PHP_FLOAT_MIN;
         $maxY = PHP_FLOAT_MIN;
-
-        foreach ($xml->xpath('//svg:path') as $path) {
-            $d = (string)$path['d'];
-            preg_match_all('/-?\d+(\.\d+)?/', $d, $matches);
-            $coordinates = array_map('floatval', $matches[0]);
-
-            for ($i = 0; $i < count($coordinates); $i += 2) {
-                $x = $coordinates[$i];
-                $y = $coordinates[$i + 1];
-
-                $minX = min($minX, $x);
-                $minY = min($minY, $y);
-                $maxX = max($maxX, $x);
-                $maxY = max($maxY, $y);
+    
+        $paths = $xml->xpath('//svg:path');
+        foreach ($paths as $path) {
+            $d = (string) $path['d'];
+            preg_match_all('/[MLC]?\s*(-?\d+\.?\d*)\s*,?\s*(-?\d+\.?\d*)/', $d, $matches);
+            
+            if (!empty($matches[1])) {
+                foreach ($matches[1] as $index => $x) {
+                    $y = $matches[2][$index];
+                    $minX = min($minX, $x);
+                    $minY = min($minY, $y);
+                    $maxX = max($maxX, $x);
+                    $maxY = max($maxY, $y);
+                }
             }
         }
-
+    
+        if ($minX === PHP_FLOAT_MAX || $minY === PHP_FLOAT_MAX || $maxX === PHP_FLOAT_MIN || $maxY === PHP_FLOAT_MIN) {
+            return false;
+        }
+    
         return [
             'minX' => $minX,
             'minY' => $minY,
-            'maxX' => $maxX,
-            'maxY' => $maxY,
             'width' => $maxX - $minX,
             'height' => $maxY - $minY,
         ];
     }
+    private function updateSvg($svgContent, $boundingBox)
+    {
+        $xml = simplexml_load_string($svgContent);
+        $xml->registerXPathNamespace('svg', $xml->getNamespaces(true)['']);
+
+        $xml['viewBox'] = "{$boundingBox['minX']} {$boundingBox['minY']} {$boundingBox['width']} {$boundingBox['height']}";
+        $xml['width'] = $boundingBox['width'];
+        $xml['height'] = $boundingBox['height'];
+
+        return $xml->asXML();
+    }
 }
+

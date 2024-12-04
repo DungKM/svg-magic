@@ -17,4 +17,14 @@ use Illuminate\Support\Facades\Route;
 Route::get('/', function () {
     return view('welcome');
 });
-Route::post('/upload-svg', [SvgController::class, 'upload'])->name('upload.svg');
+Route::post('/upload-svg', [SvgController::class, 'upload'])->name('svg.upload');
+
+Route::get('/download-svg/{filename}', function ($filename) {
+    $filePath = storage_path('app/svg_output/' . $filename);
+    
+    if (file_exists($filePath)) {
+        return response()->download($filePath);
+    }
+    
+    return response()->json(['error' => 'File not found'], 404);
+});

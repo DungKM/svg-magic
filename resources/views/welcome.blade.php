@@ -405,11 +405,12 @@
 </head>
 
 <body class="antialiased">
-    <form id="upload-svg-form" action="{{ route('upload.svg') }}" method="POST" enctype="multipart/form-data">
+    <form action="{{ route('svg.upload') }}" method="POST" enctype="multipart/form-data">
         @csrf
-        <input type="file" name="svg_file" accept=".svg" required>
-        <button type="submit">Upload</button>
+        <input type="file" name="svg_files[]" multiple>
+        <button type="submit">Upload SVG Files</button>
     </form>
+    
     <div id="result"></div>
     
     <script>
